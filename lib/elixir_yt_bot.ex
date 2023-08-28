@@ -16,10 +16,7 @@ end
 defmodule AudioPlayerConsumer do
   use Nostrum.Consumer
 
-  alias Nostrum.Api
-  alias Nostrum.Cache.GuildCache
-  alias Nostrum.Voice
-
+  alias Nostrum.{Api, Cache.GuildCache, Voice}
   require Logger
 
   opt = fn type, name, desc, opts ->
@@ -41,38 +38,15 @@ defmodule AudioPlayerConsumer do
     {"resume", "Resume the paused sound", []}
   ]
 
-  def get_voice_channel_of_interaction(%{guild_id: guild_id, user: %{id: user_id}} = _interaction) do
-    guild_id
-    |> GuildCache.get!()
-    |> Map.get(:voice_states)
-    |> Enum.find(%{}, fn v -> v.user_id == user_id end)
-    |> Map.get(:channel_id)
-  end
-
-  # If you are running this example in an iex session where you manually call
-  # AudioPlayerSupervisor.start_link, you will have to call this function
-  # with your guild_id as the argument
-  def create_guild_commands(guild_id) do
-    Enum.each(@commands, fn {name, description, options} ->
-      Api.create_guild_application_command(guild_id, %{
-        name: name,
-        description: description,
-        options: options
-      })
-    end)
-  end
-
-  @spec handle_event(any) ::
-          :noop | :ok | {:ok} | {:error, %{response: binary | map, status_code: 1..1_114_111}}
-  def handle_event({:READY, %{guilds: guilds} = _event, _ws_state}) do
+  def handle_event({:READY, %{guilds: guilds}, _ws_state}) do
     guilds
-    |> Enum.map(fn guild -> guild.id end)
+    |> Enum.map(& &1.id)
     |> Enum.each(&create_guild_commands/1)
   end
 
-  def handle_event({:INTERACTION_CREATE, interaction, _ws_state}) do
+  def handle_event({:INTERACTION_CREATE, %{data: %{name: command_name}} = interaction, _ws_state}) do
     message =
-      case do_command(interaction) do
+      case do_command(command_name, interaction) do
         {:msg, msg} -> msg
         _ -> "done"
       end
@@ -80,11 +54,11 @@ defmodule AudioPlayerConsumer do
     Api.create_interaction_response(interaction, %{type: 4, data: %{content: message}})
   end
 
-  def handle_event({:VOICE_SPEAKING_UPDATE, payload, _ws_state}) do
-    if payload.speaking == false && payload.timed_out == false do
-      first_of_queue = dequeue()
-      Voice.play(first_of_queue[:guild_id], first_of_queue[:url], :ytdl)
-    end
+  def handle_event(
+        {:VOICE_SPEAKING_UPDATE, %{speaking: false, timed_out: false} = _payload, _ws_state}
+      ) do
+    first_of_queue = dequeue()
+    Voice.play(first_of_queue[:guild_id], first_of_queue[:url], :ytdl)
   end
 
   def handle_event({:VOICE_READY, _, _}) do
@@ -93,72 +67,72 @@ defmodule AudioPlayerConsumer do
     Voice.play(interaction[:guild_id], interaction[:url], :ytdl)
   end
 
-  def handle_event(_event) do
-    :noop
-  end
+  def handle_event(_), do: :noop
 
-  @spec do_command(%{
-          :data => %{:name => <<_::32, _::_*8>>, optional(any) => any},
-          :guild_id => non_neg_integer,
-          optional(any) => any
-        }) :: :ok | {:error, <<_::64, _::_*8>>} | {:msg, <<_::160, _::_*184>>}
-  def do_command(%{guild_id: guild_id, data: %{name: "summon"}} = interaction) do
+  def do_command("summon", interaction) do
     case get_voice_channel_of_interaction(interaction) do
-      nil ->
-        {:msg, "You must be in a voice channel to summon me"}
-
-      voice_channel_id ->
-        Voice.join_channel(guild_id, voice_channel_id, false, true)
+      nil -> {:msg, "You must be in a voice channel to summon me"}
+      voice_channel_id -> Voice.join_channel(interaction.guild_id, voice_channel_id, false, true)
     end
   end
 
-  def do_command(%{guild_id: guild_id, data: %{name: "leave"}}) do
-    Voice.leave_channel(guild_id)
-    {:msg, "See you later :wave:"}
+  def do_command("leave", %{guild_id: guild_id}),
+    do: {:msg, "See you later :wave:", Voice.leave_channel(guild_id)}
+
+  def do_command("pause", %{guild_id: guild_id}), do: Voice.pause(guild_id)
+  def do_command("resume", %{guild_id: guild_id}), do: Voice.resume(guild_id)
+  def do_command("stop", %{guild_id: guild_id}), do: Voice.stop(guild_id)
+
+  def do_command("play", %{guild_id: guild_id, data: %{options: options}} = interaction) do
+    url_option = options |> List.first() |> Map.get(:options) |> List.first()
+    url = Map.get(url_option, :value)
+
+    play_sound(guild_id, url, interaction)
   end
 
-  def do_command(%{guild_id: guild_id, data: %{name: "pause"}}), do: Voice.pause(guild_id)
-
-  def do_command(%{guild_id: guild_id, data: %{name: "resume"}}), do: Voice.resume(guild_id)
-
-  def do_command(%{guild_id: guild_id, data: %{name: "stop"}}), do: Voice.stop(guild_id)
-
-  def do_command(%{guild_id: guild_id, data: %{name: "play", options: options}} = interaction) do
-    url_option = Enum.at(options, 0).options |> Enum.at(0)
-    url = url_option.value
-
+  defp play_sound(guild_id, url, interaction) do
     cond do
       Voice.playing?(guild_id) ->
         enqueue(guild_id, url)
 
-      !Voice.ready?(guild_id) ->
-        case get_voice_channel_of_interaction(interaction) do
-          nil ->
-            {:msg, "You must be in a voice channel to summon me"}
-
-          voice_channel_id ->
-            Voice.join_channel(guild_id, voice_channel_id, false, true)
-        end
-
-        AudioPlayerConsumer.State.put(:interaction, %{
-          guild_id: guild_id,
-          url: url
-        })
+      not Voice.ready?(guild_id) ->
+        channel_id = get_voice_channel_of_interaction(interaction)
+        unless channel_id, do: {:msg, "You must be in a voice channel to summon me"}
+        Voice.join_channel(guild_id, channel_id, false, true)
+        AudioPlayerConsumer.State.put(:interaction, %{guild_id: guild_id, url: url})
 
       true ->
         Voice.play(guild_id, url, :ytdl)
     end
   end
 
+  defp get_voice_channel_of_interaction(%{guild_id: guild_id, user: %{id: user_id}}) do
+    guild_id
+    |> GuildCache.get!()
+    |> Map.get(:voice_states)
+    |> Enum.find(fn v -> v.user_id == user_id end)
+    |> Map.get(:channel_id)
+  end
+
   defp enqueue(guild_id, url) do
-    current_queue = AudioPlayerConsumer.State.get(:queue) || []
-    AudioPlayerConsumer.State.put(:queue, current_queue ++ [%{guild_id: guild_id, url: url}])
+    queue = AudioPlayerConsumer.State.get(:queue) || []
+    AudioPlayerConsumer.State.put(:queue, queue ++ [%{guild_id: guild_id, url: url}])
   end
 
   defp dequeue do
     {first_of_queue, new_queue} = List.pop_at(AudioPlayerConsumer.State.get(:queue), 0)
     AudioPlayerConsumer.State.put(:queue, new_queue)
     first_of_queue
+  end
+
+  defp create_guild_commands(guild_id) do
+    Enum.each(@commands, fn {name, description, options} ->
+      Api.create_guild_application_command(guild_id, %{
+        name: name,
+        description: description,
+        options: options
+      })
+    end)
   end
 end
 
