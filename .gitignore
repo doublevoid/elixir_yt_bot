@@ -24,3 +24,5 @@ elixir_yt_bot-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+start_bot.sh
