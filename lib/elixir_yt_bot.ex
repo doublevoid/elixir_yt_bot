@@ -43,7 +43,8 @@ defmodule AudioPlayerConsumer do
        opt.(1, "index", "Promote given index from the queue",
          options: [opt.(3, "index", "index of the song in the queue", required: true)]
        )
-     ]}
+     ]},
+    {"current", "Gets the currently playing song", []}
   ]
 
   def handle_event({:READY, %{guilds: guilds}, _ws_state}) do
@@ -105,6 +106,8 @@ defmodule AudioPlayerConsumer do
 
     AudioPlayerConsumer.State.put(String.to_atom("queue#{guild_id}"), promoted_list)
   end
+
+  def do_command("current", %{guild_id: guild_id}), do: {:msg, Voice.get_current_url(guild_id)}
 
   def do_command("leave", %{guild_id: guild_id}) do
     AudioPlayerConsumer.State.put(String.to_atom("queue#{guild_id}"), [])
