@@ -35,7 +35,8 @@ defmodule AudioPlayerConsumer do
     {"play", "Play a sound", @play_opts},
     {"stop", "Stop the playing sound", []},
     {"pause", "Pause the playing sound", []},
-    {"resume", "Resume the paused sound", []}
+    {"resume", "Resume the paused sound", []},
+    {"skip", "Skip the currently playing song and play the next one", []}
   ]
 
   def handle_event({:READY, %{guilds: guilds}, _ws_state}) do
@@ -73,6 +74,15 @@ defmodule AudioPlayerConsumer do
     case get_voice_channel_of_interaction(interaction) do
       nil -> {:msg, "You must be in a voice channel to summon me"}
       voice_channel_id -> Voice.join_channel(interaction.guild_id, voice_channel_id, false, true)
+    end
+  end
+
+  def do_command("skip", %{guild_id: guild_id}) do
+    if(Voice.playing?(guild_id)) do
+      next_to_play = dequeue()
+
+      Voice.stop(guild_id)
+      Voice.play(next_to_play[:guild_id], next_to_play[:url], :ytdl)
     end
   end
 
@@ -157,8 +167,6 @@ defmodule AudioPlayerConsumer.State do
     end)
   end
 end
-
-# Implement skip feature (I hate my girlfriend)
 
 # Implement feature to list queue
 
