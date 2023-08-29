@@ -99,9 +99,6 @@ defmodule AudioPlayerConsumer do
   def do_command("promote", %{guild_id: guild_id, data: %{options: options}}) do
     promote_option = parse_option(options)
 
-    Logger.debug("bielpk")
-    Logger.debug("#{Map.get(promote_option, :value)}")
-
     promoted_list =
       Map.get(promote_option, :value)
       |> move_to_start(guild_id)
