@@ -36,7 +36,8 @@ defmodule AudioPlayerConsumer do
     {"stop", "Stop the playing sound", []},
     {"pause", "Pause the playing sound", []},
     {"resume", "Resume the paused sound", []},
-    {"skip", "Skip the currently playing song and play the next one", []}
+    {"skip", "Skips the currently playing song and play the next one on the queue", []},
+    {"queue", "Gets the current song queue", []}
   ]
 
   def handle_event({:READY, %{guilds: guilds}, _ws_state}) do
@@ -86,8 +87,14 @@ defmodule AudioPlayerConsumer do
     end
   end
 
-  def do_command("leave", %{guild_id: guild_id}),
-    do: {:msg, "See you later :wave:", Voice.leave_channel(guild_id)}
+  def do_command("queue", _),
+    do: {:msg, Enum.join(Enum.map(queue(), & &1[:url]), "\n")}
+
+  def do_command("leave", %{guild_id: guild_id}) do
+    AudioPlayerConsumer.State.put(:queue, [])
+
+    {:msg, "bye", Voice.leave_channel(guild_id)}
+  end
 
   def do_command("pause", %{guild_id: guild_id}), do: Voice.pause(guild_id)
   def do_command("resume", %{guild_id: guild_id}), do: Voice.resume(guild_id)
@@ -101,7 +108,12 @@ defmodule AudioPlayerConsumer do
   end
 
   defp play_sound(guild_id, url, interaction) do
+    valid_url = UrlValidator.valid?(url)
+
     cond do
+      valid_url == false ->
+        {:msg, "Invalid URL"}
+
       Voice.playing?(guild_id) ->
         enqueue(guild_id, url)
 
@@ -135,6 +147,10 @@ defmodule AudioPlayerConsumer do
     first_of_queue
   end
 
+  defp queue do
+    AudioPlayerConsumer.State.get(:queue)
+  end
+
   defp create_guild_commands(guild_id) do
     Enum.each(@commands, fn {name, description, options} ->
       Api.create_guild_application_command(guild_id, %{
@@ -143,6 +159,22 @@ defmodule AudioPlayerConsumer do
         options: options
       })
     end)
+  end
+
+  def check_url(value) do
+    case URI.parse(value) do
+      %URI{scheme: nil} ->
+        "is missing a scheme (e.g. https)"
+
+      %URI{host: nil} ->
+        "is missing a host"
+
+      %URI{host: host} ->
+        case :inet.gethostbyname(Kernel.to_charlist(host)) do
+          {:ok, _} -> nil
+          {:error, _} -> "invalid host"
+        end
+    end
   end
 end
 
