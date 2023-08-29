@@ -37,7 +37,13 @@ defmodule AudioPlayerConsumer do
     {"pause", "Pause the playing sound", []},
     {"resume", "Resume the paused sound", []},
     {"skip", "Skips the currently playing song and play the next one on the queue", []},
-    {"queue", "Gets the current song queue", []}
+    {"queue", "Gets the current song queue", []},
+    {"promote", "Promote a song from the queue",
+     [
+       opt.(1, "index", "Promote given index from the queue",
+         options: [opt.(3, "index", "index of the song in the queue", required: true)]
+       )
+     ]}
   ]
 
   def handle_event({:READY, %{guilds: guilds}, _ws_state}) do
@@ -57,9 +63,9 @@ defmodule AudioPlayerConsumer do
   end
 
   def handle_event(
-        {:VOICE_SPEAKING_UPDATE, %{speaking: false, timed_out: false} = _payload, _ws_state}
+        {:VOICE_SPEAKING_UPDATE, %{speaking: false, timed_out: false} = _payload, ws_state}
       ) do
-    first_of_queue = dequeue()
+    first_of_queue = dequeue(ws_state.guild_id)
     Voice.play(first_of_queue[:guild_id], first_of_queue[:url], :ytdl)
   end
 
@@ -80,25 +86,31 @@ defmodule AudioPlayerConsumer do
 
   def do_command("skip", %{guild_id: guild_id}) do
     if(Voice.playing?(guild_id)) do
-      next_to_play = dequeue()
+      next_to_play = dequeue(guild_id)
 
       Voice.stop(guild_id)
       Voice.play(next_to_play[:guild_id], next_to_play[:url], :ytdl)
     end
   end
 
-  def do_command("queue", _) do
-    dota =
-      queue()
-      |> Enum.with_index()
-      |> Enum.map(fn {item, idx} -> "#{item[:url]} - #{idx}" end)
-      |> Enum.join("\n")
+  def do_command("queue", %{guild_id: guild_id}),
+    do: {:msg, parse_queue(guild_id)}
 
-    {:msg, dota}
+  def do_command("promote", %{guild_id: guild_id, data: %{options: options}}) do
+    promote_option = parse_option(options)
+
+    Logger.debug("bielpk")
+    Logger.debug("#{Map.get(promote_option, :value)}")
+
+    promoted_list =
+      Map.get(promote_option, :value)
+      |> move_to_start(guild_id)
+
+    AudioPlayerConsumer.State.put(String.to_atom("queue#{guild_id}"), promoted_list)
   end
 
   def do_command("leave", %{guild_id: guild_id}) do
-    AudioPlayerConsumer.State.put(:queue, [])
+    AudioPlayerConsumer.State.put(String.to_atom("queue#{guild_id}"), [])
 
     {:msg, "bye", Voice.leave_channel(guild_id)}
   end
@@ -108,7 +120,7 @@ defmodule AudioPlayerConsumer do
   def do_command("stop", %{guild_id: guild_id}), do: Voice.stop(guild_id)
 
   def do_command("play", %{guild_id: guild_id, data: %{options: options}} = interaction) do
-    url_option = options |> List.first() |> Map.get(:options) |> List.first()
+    url_option = parse_option(options)
     url = Map.get(url_option, :value)
 
     play_sound(guild_id, url, interaction)
@@ -144,18 +156,36 @@ defmodule AudioPlayerConsumer do
   end
 
   defp enqueue(guild_id, url) do
-    queue = AudioPlayerConsumer.State.get(:queue) || []
-    AudioPlayerConsumer.State.put(:queue, queue ++ [%{guild_id: guild_id, url: url}])
+    queue = AudioPlayerConsumer.State.get(String.to_atom("queue#{guild_id}")) || []
+
+    AudioPlayerConsumer.State.put(
+      String.to_atom("queue#{guild_id}"),
+      queue ++ [%{guild_id: guild_id, url: url}]
+    )
   end
 
-  defp dequeue do
-    {first_of_queue, new_queue} = List.pop_at(AudioPlayerConsumer.State.get(:queue), 0)
-    AudioPlayerConsumer.State.put(:queue, new_queue)
+  defp dequeue(guild_id) do
+    atom = String.to_atom("queue#{guild_id}")
+    {first_of_queue, new_queue} = List.pop_at(AudioPlayerConsumer.State.get(atom), 0)
+    AudioPlayerConsumer.State.put(atom, new_queue)
     first_of_queue
   end
 
-  defp queue do
-    AudioPlayerConsumer.State.get(:queue)
+  defp queue(guild_id) do
+    String.to_atom("queue#{guild_id}") |> AudioPlayerConsumer.State.get()
+  end
+
+  defp parse_queue(guild_id) do
+    queue = queue(guild_id) || []
+
+    if Enum.count(queue) > 0 do
+      queue
+      |> Enum.with_index()
+      |> Enum.map(fn {item, idx} -> "#{item[:url]} - #{idx}" end)
+      |> Enum.join("\n")
+    else
+      "queue is empty"
+    end
   end
 
   defp create_guild_commands(guild_id) do
@@ -168,19 +198,19 @@ defmodule AudioPlayerConsumer do
     end)
   end
 
-  def check_url(value) do
-    case URI.parse(value) do
-      %URI{scheme: nil} ->
-        "is missing a scheme (e.g. https)"
+  defp parse_option(interaction) do
+    interaction |> List.first() |> Map.get(:options) |> List.first()
+  end
 
-      %URI{host: nil} ->
-        "is missing a host"
+  defp move_to_start(index, guild_id) do
+    queue = queue(guild_id)
+    index = String.to_integer(index)
 
-      %URI{host: host} ->
-        case :inet.gethostbyname(Kernel.to_charlist(host)) do
-          {:ok, _} -> nil
-          {:error, _} -> "invalid host"
-        end
+    if(index < length(queue)) do
+      item = Enum.at(queue, index, 0)
+      [item | List.delete_at(queue, index)]
+    else
+      queue
     end
   end
 end
@@ -206,5 +236,3 @@ defmodule AudioPlayerConsumer.State do
     end)
   end
 end
-
-# Implement feature to bump music from queue
