@@ -87,8 +87,15 @@ defmodule AudioPlayerConsumer do
     end
   end
 
-  def do_command("queue", _),
-    do: {:msg, Enum.join(Enum.map(queue(), & &1[:url]), "\n")}
+  def do_command("queue", _) do
+    dota =
+      queue()
+      |> Enum.with_index()
+      |> Enum.map(fn {item, idx} -> "#{item[:url]} - #{idx}" end)
+      |> Enum.join("\n")
+
+    {:msg, dota}
+  end
 
   def do_command("leave", %{guild_id: guild_id}) do
     AudioPlayerConsumer.State.put(:queue, [])
@@ -199,7 +206,5 @@ defmodule AudioPlayerConsumer.State do
     end)
   end
 end
-
-# Implement feature to list queue
 
 # Implement feature to bump music from queue
