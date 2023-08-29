@@ -157,3 +157,9 @@ defmodule AudioPlayerConsumer.State do
     end)
   end
 end
+
+# Implement skip feature (I hate my girlfriend)
+
+# Implement feature to list queue
+
+# Implement feature to bump music from queue
